@@ -89,8 +89,6 @@ todo -- See http://pypi.python.org/pypi/LogPy/1.0 for some (well, at least one)
 //// Log classes
 ////
 
-define variable $root-log :: false-or(<log>) = #f;
-
 define sealed generic log-name
     (log :: <abstract-log>) => (name :: <string>);
 define sealed generic log-parent
@@ -130,11 +128,13 @@ define abstract class <abstract-log> (<object>)
 
 end class <abstract-log>;
 
+// skip-add? is only to work around infinite recursion when initializing *log*.
+// It shouldn't be documented.
 define method initialize
-    (log :: <abstract-log>, #key name :: <string>)
+    (log :: <abstract-log>, #key name :: <string>, skip-add? :: <boolean>)
   next-method();
-  if ($root-log)
-    add-log($root-log, log, as(<list>, split(name, '.')), name);
+  if (~skip-add?)
+    add-log(*log*, log, as(<list>, split(name, '.')), name);
   end;
 end method initialize;
 
@@ -154,36 +154,24 @@ end;
 
 define sealed generic log-level (log :: <log>) => (level :: <log-level>);
 define sealed generic log-targets (log :: <log>) => (targets :: <vector>);
-define sealed generic log-formatter (log :: <log>) => (formatter :: <log-formatter>);
 
 define open class <log> (<abstract-log>)
-  slot log-level :: <log-level> = $trace-level,
+  slot log-level :: <log-level> = $debug-level,
     init-keyword: level:;
 
   constant slot log-targets :: <stretchy-vector> = make(<stretchy-vector>),
     init-keyword: targets:;
-
-  slot log-formatter :: <log-formatter> = $default-log-formatter,
-    init-keyword: formatter:;
-
 end class <log>;
 
 define method make
     (class :: subclass(<log>),
      #rest args,
-     #key formatter, targets :: false-or(<sequence>))
+     #key targets :: false-or(<sequence>))
  => (log)
-  // Formatter may be specified as a string for convenience.
-  if (instance?(formatter, <string>))
-    formatter := make(<log-formatter>, pattern: formatter);
-  end;
   // Make sure targets is a <stretchy-vector>.  It's convenient for users
   // to be able to pass list(make(<target> ...)) though.
   let targets = as(<stretchy-vector>, targets | #[]);
-  apply(next-method, class,
-        targets: targets,
-        formatter: formatter | $default-log-formatter,
-        args)
+  apply(next-method, class, targets: targets, args)
 end method make;
 
 define method print-object
@@ -231,14 +219,9 @@ define function logging-error
               format-arguments: args))
 end;
 
-define function get-root-log
-    () => (log :: <log>)
-  $root-log
-end;
-
 define function get-log
     (name :: <string>) => (log :: false-or(<abstract-log>))
-  %get-log($root-log, as(<list>, split(name, '.')), name)
+  %get-log(*log*, as(<list>, split(name, '.')), name)
 end;
 
 define method %get-log
@@ -254,11 +237,6 @@ end method %get-log;
 define method %get-log
     (log :: <placeholder-log>, path :: <list>, original-name :: <string>)
   ~empty?(path) & next-method()
-end method %get-log;
-
-define method %get-log
-    (log == #f, path :: <list>, original-name :: <string>)
-  logging-error("Log not found: %s", original-name);
 end method %get-log;
 
 
@@ -354,10 +332,10 @@ define method log-message
  => ()
   if (log.log-enabled?  & log-level-applicable?(given-level, log.log-level))
     for (target :: <log-target> in log.log-targets)
-      log-to-target(target, given-level, log.log-formatter, object, args);
+      log-to-target(target, given-level, object, args);
     end;
   end;
-  if (log.log-additive?)
+  if (log.log-additive? & log.log-parent)
     apply(log-message, given-level, log.log-parent, object, args);
   end;
 end method log-message;
@@ -365,7 +343,7 @@ end method log-message;
 define method log-message
     (given-level :: <log-level>, log :: <placeholder-log>, object :: <object>,
      #rest args)
-  if (log.log-additive?)
+  if (log.log-additive? & log.log-parent)
     apply(log-message, given-level, log.log-parent, object, args)
   end;
 end;
@@ -409,7 +387,7 @@ end;
 // write the object to the backing store.
 //
 define open generic log-to-target
-    (target :: <log-target>, level :: <log-level>, formatter :: <log-formatter>,
+    (target :: <log-target>, level :: <log-level>,
      object :: <object>, args :: <sequence>)
  => ();
 
@@ -435,8 +413,7 @@ end;
 
 define sealed method log-to-target
     (target :: <null-log-target>, level :: <log-level>,
-     formatter :: <log-formatter>, format-string :: <string>,
-     args :: <sequence>)
+     format-string :: <string>, args :: <sequence>)
  => ()
   // do nothing
 end;
@@ -469,12 +446,12 @@ define constant $stderr-log-target
   = make(<stream-log-target>, stream: *standard-error*);
 
 define method log-to-target
-    (target :: <stream-log-target>, level :: <log-level>, formatter :: <log-formatter>,
+    (target :: <stream-log-target>, level :: <log-level>,
      format-string :: <string>, args :: <sequence>)
  => ()
   let stream :: <stream> = target.target-stream;
   with-stream-locked (stream)
-    pattern-to-stream(formatter, stream, level, target, format-string, args);
+    pattern-to-stream(*formatter*, stream, level, target, format-string, args);
     write(stream, "\n");
     force-output(stream);
   end;
@@ -529,12 +506,11 @@ end;
 
 define method log-to-target
     (target :: <file-log-target>, level :: <log-level>,
-     formatter :: <log-formatter>, format-string :: <string>,
-     format-args :: <sequence>)
+     format-string :: <string>, format-args :: <sequence>)
  => ()
   let stream :: <stream> = target.target-stream;
   with-stream-locked (stream)
-    pattern-to-stream(formatter, stream, level, target, format-string, format-args);
+    pattern-to-stream(*formatter*, stream, level, target, format-string, format-args);
     write(stream, "\n");
     force-output(stream);
   end;
@@ -612,8 +588,7 @@ end method print-object;
 
 define method log-to-target
     (target :: <rolling-file-log-target>, level :: <log-level>,
-     formatter :: <log-formatter>, format-string :: <string>,
-     format-args :: <sequence>)
+     format-string :: <string>, format-args :: <sequence>)
  => ()
   next-method();
   // todo -- calling stream-size may be very slow?  Maybe log-to-target should
@@ -864,21 +839,25 @@ end function elapsed-milliseconds;
 
 
 /////////////////////////////////////////////////////
-//// For use by the test suite
-////
-
-define function reset-logging
-    ()
-  // maybe should close existing log targets?
-  $root-log := make(<log>, name: "root", additive?: #f, enabled?: #f);
-end;
-
-/////////////////////////////////////////////////////
 //// Initialize
 ////
 
-begin
-  reset-logging();
-end;
+// Provide a useful default log for libraries to use.
+define variable *log* :: <log>
+  = make(<log>, name: "root", targets: list($stdout-log-target), skip-add?: #t);
 
+// All logging uses this formatter, set only by initialize-logging.
+define variable *formatter* :: <log-formatter> = $default-log-formatter;
 
+// Intended to be called once at executable startup time.  Libraries should not
+// need to call this.
+define function initialize-logging
+    (log :: false-or(<log>), formatter-pattern :: false-or(<string>))
+ => ()
+  if (log)
+    *log* := log;
+  end;
+  if (formatter-pattern)
+    *formatter* := make(<log-formatter>, pattern: formatter-pattern);
+  end;
+end function initialize-logging;

@@ -40,20 +40,20 @@ define method make
         args)
 end;
 
-define constant $message-only-formatter
-  = make(<log-formatter>, pattern: "%{message}");
-
 // Make the most common type of log for testing.
 //
 define function make-test-log
     (name :: <string>, #rest init-args)
- => (log :: <log>)
-  apply(make, <log>,
-        name: name,
-        targets: list(make(<string-log-target>)),
-        formatter: $message-only-formatter,
-        init-args)
-end;
+ => (log :: <log>, target :: <string-log-target>)
+  let target = make(<string-log-target>);
+  let log = apply(make, <log>,
+                  name: name,
+                  targets: list(target),
+                  init-args);
+  // Only include the message in the logs, for easier testing.
+  initialize-logging(log, "%{message}");
+  values(log, target)
+end function make-test-log;
 
 define constant $log-levels
   = list($trace-level, $debug-level, $info-level, $warn-level, $error-level);
@@ -65,17 +65,12 @@ define constant $log-functions
 // log = trace   idx = 0           expected = xxx\n
 define function test-log-level
     (log-level :: <log-level>)
-  reset-logging();
   let log-priority = position($log-levels, log-level);
   for (log-fn in $log-functions,
        current-level in $log-levels,
        current-priority from 0)
-    let target = make(<string-log-target>);
-    let log = make(<log>,
-                   name: fmt("log.%d", current-priority),
-                   targets: list(target),
-                   level: log-level,
-                   formatter: $message-only-formatter);
+    let (log, target) = make-test-log(fmt("log.%d", current-priority),
+                                      level: log-level);
     log-fn(log, "xxx");
     let expected = if (current-priority >= log-priority) "xxx\n" else "" end;
     let actual = stream-contents(target.target-stream);
@@ -103,8 +98,8 @@ define test test-process-id ()
     let log = make(<log>,
                    name: format-to-string("test-process-id-%s", i),
                    targets: list(target),
-                   formatter: make(<log-formatter>, pattern: pattern),
                    level: $trace-level);
+    initialize-logging(log, pattern);
     log-info(log, "this is ignored");
     check-equal("log stream contains process id only",
                 stream-contents(target.target-stream),

@@ -41,7 +41,6 @@ define module-spec logging
 
   function add-target (<log>, <log-target>) => ();
   function get-log (<string>) => (false-or(<abstract-log>));
-  function get-root-log () => (<log>);
   function level-name (<log-level>) => (<string>);
   function log-debug-if (<object>, <abstract-log>, <string>) => ();
   function log-level-setter (<log-level>, <log>) => (<log-level>);
@@ -86,10 +85,6 @@ define logging class-test <placeholder-log> ()
 end class-test <placeholder-log>;
 
 define logging class-test <log> ()
-  check-no-errors("make a log with a <string> formatter",
-                  make(<log>,
-                       name: "<log>-test",
-                       formatter: "foo"));
 end class-test <log>;
 
 define logging class-test <logging-error> ()
@@ -115,8 +110,8 @@ define logging class-test <file-log-target> ()
   let target = make(<file-log-target>, pathname: locator);
   let log = make(<log>,
                  name: "file-log-target-test",
-                 targets: list(target),
-                 formatter: $message-only-formatter);
+                 targets: list(target));
+  initialize-logging(log, "%{message}");
   log-info(log, "test");
   close(target);
   with-open-file (stream = locator, direction: #"input")
@@ -136,8 +131,8 @@ define logging class-test <rolling-file-log-target> ()
                     max-size: 10);
   let log = make(<log>,
                  name: "rolling-file-test",
-                 targets: list(target),
-                 formatter: $message-only-formatter);
+                 targets: list(target));
+  initialize-logging(log, "%{message}");
   // I figure this could log 8 or 9 characters, including CR and/or LF.
   log-info(log, "1234567");
   close(target);  // can't read file on Windows unless it's closed
@@ -198,9 +193,6 @@ end function-test current-log-object;
 
 define logging function-test get-log ()
 end function-test get-log;
-
-define logging function-test get-root-log ()
-end function-test get-root-log;
 
 define logging function-test level-name ()
 end function-test level-name;

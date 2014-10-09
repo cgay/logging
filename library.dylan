@@ -20,8 +20,8 @@ end library logging;
 define module logging
   create
     <log>,
-    log-formatter,
-    log-formatter-setter,
+    *log*,
+    initialize-logging,
     log-level,
     log-level-setter,
     log-level-applicable?,
@@ -32,7 +32,6 @@ define module logging
     log-enabled?,
     log-enabled?-setter,
     get-log,
-    get-root-log,
     add-target,
     remove-all-targets,
     remove-target,
@@ -111,8 +110,7 @@ define module logging-impl
 
   export
     // for test suite
-    elapsed-milliseconds,
-    reset-logging;
+    elapsed-milliseconds;
 
 end module logging-impl;
 

@@ -1,5 +1,5 @@
 library: logging
+modules: logging
 target-type:  dll
-files: library
-       logging
+files: logging
 Copyright: Copyright (c) 2013 Dylan Hackers.  See License.txt for details.

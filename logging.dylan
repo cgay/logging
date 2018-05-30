@@ -1,7 +1,81 @@
-Module:    logging-impl
+Module:    log
 Author:    Carl L Gay
 Synopsis:  Simple logging mechanism.  Some ideas taken from log4j.
 Copyright: Copyright (c) 2013 Dylan Hackers.  See License.txt for details.
+
+// This file has been converted to a hypothetical new module system
+// where "define module" is replaced by import statements in the same
+// file (or files) with the main code. "export" clauses are replaced
+// by "public" adjectives on define forms. I want to get a sense of
+// how this might feel.
+
+// A big difference is that used modules may be referenced directly
+// via "foo:bar" syntax. The compiler should be able to convert this
+// new syntax into the equivalennt of importing "bar" from "foo" and
+// then referencing it as "bar". For example:
+//
+//   use system.date;
+//   use io.format;
+//
+//   format:to-stream("The time is now %s.", date:now());
+//
+// There is no conflict between the local variable named "date" and
+// the module imported as "date" because module names have their own
+// namespace and the foo:bar syntax unambiguously indicates a module
+// reference. This can be used for documentation purposes, for example:
+//
+//   define method common-dylan:print-object ...
+//
+//
+// A library is defined by the build system (e.g., a LID file) as a
+// set of files and a set of exported modules. We could either specify
+// the list of exported modules in the LID file, or we could use a
+// naming convention, like %module to mean internal module.
+//
+// Any file may import or export modules and names. The full module
+// definition is the sum of those imports and exports. Redundant
+// imports (e.g., in different files) are acceptable. Redundant
+// exports result in a warning.
+//
+// TODO: How do we test internals? Can we build the tests into the
+//       module-under-test?  Probably.  Another possibility is to use
+//       naming conventions: "public %foo" public, but is internal by
+//       convention because of the leading %. This is a little worse
+//       than exporting an internal-only module though, because it
+//       requires adding a leading % to anything internal you want to
+//       test. I don't like it, and I think we can use the build system.
+//
+// TODO: Do we need something to get the equivalent of what the
+//       "create" clause provides now?
+
+use dylan, import: *;  // Use { \* } to import the actual name "*".
+use common-extensions, import: *;
+use io.streams;
+
+// Import two classes from the date module so they can be used without
+// the module prefix. Note that any import from a module makes the
+// module itself accessible via module:name syntax.
+//
+// Note: I made some name changes such as current-date -> date:now
+// and format-date -> date:format, which reflect the way I think
+// things would be named in a world where you can use module:
+// qualifiers.
+use system.date, import: { <date>, <duration> };
+
+// Note that without "as fs", names would be accessible as "file-system:foo",
+// not "system.file-system:foo".
+use system.file-system as fs;
+
+// Use the format module without any explicit imports.
+// format-to-string becomes just to-string and is referenced as
+// format:to-string. Similar for format:to-stream etc.
+use format;
+
+use generic-arithmetic, import: { <integer> as <double-integer>,
+                                  \+ as plus,
+                                  \* as mul,
+                                  \/ as div };
+use system.locators, import: { <locator>, <file-locator>, locator-name, merge-locators };
 
 
 /* 
@@ -72,7 +146,7 @@ todo -- Look at concurrency issues.  For example, is it possible for log
         atomically and guarantee monotonically increasing log entry dates.
         Must be optional since it's heavyweight.
 
-idea -- Support logging categories.  Each log message is associated with a
+idea -- Support log categories.  Each log message is associated with a
         category.  Each category has a log level associated with it.  This
         makes it easy to adjust the types of debug logging per category at
         run time.  Categories could be hierarchical so that messages from
@@ -89,43 +163,43 @@ todo -- See http://pypi.python.org/pypi/LogPy/1.0 for some (well, at least one)
 //// Log classes
 ////
 
-define variable $root-log :: false-or(<log>) = #f;
+define variable $root :: false-or(<log>) = #f;
 
-define sealed generic log-name
+define public sealed generic name
     (log :: <abstract-log>) => (name :: <string>);
-define sealed generic log-parent
+define sealed generic parent
     (log :: <abstract-log>) => (parent :: false-or(<abstract-log>));
-define sealed generic log-children
+define sealed generic children
     (log :: <abstract-log>) => (children :: <string-table>);
-define sealed generic log-additive?
+define public sealed generic additive?
     (log :: <abstract-log>) => (additive? :: <boolean>);
-define sealed generic log-enabled?
+define public sealed generic enabled?
     (log :: <abstract-log>) => (enabled? :: <boolean>);
 
-define abstract class <abstract-log> (<object>)
+define public abstract class <abstract-log> (<object>)
   // A dotted path name.  All parent logs in the path must already exist.
-  constant slot log-name :: <string>,
+  constant slot name :: <string>,
     required-init-keyword: name:;
 
-  slot log-parent :: false-or(<abstract-log>) = #f,
+  slot parent :: false-or(<abstract-log>) = #f,
     init-keyword: parent:;
 
-  constant slot log-children :: <string-table> = make(<string-table>),
+  constant slot children :: <string-table> = make(<string-table>),
     init-keyword: children:;
 
   // If this is #t then log messages sent to this log will be passed up
   // the hierarchy to parent logs as well, until it reaches a log
   // whose additivity is #f.  Terminology stolen from log4j.
   //
-  slot log-additive? :: <boolean> = #t,
+  slot additive? :: <boolean> = #t,
     init-keyword: additive?:;
 
   // If disabled, no messages will be logged to this log's targets.
-  // The value of log-additive? will still be respected.  In other
+  // The value of additive? will still be respected.  In other
   // words, logging to a disabled log will still log to ancestor
   // logs if they are themselves enabled.
   //
-  slot log-enabled? :: <boolean> = #t,
+  slot enabled? :: <boolean> = #t,
     init-keyword: enabled?:;
 
 end class <abstract-log>;
@@ -133,15 +207,18 @@ end class <abstract-log>;
 define method initialize
     (log :: <abstract-log>, #key name :: <string>)
   next-method();
-  if ($root-log)
-    add-log($root-log, log, as(<list>, split(name, '.')), name);
+  if ($root)
+    // This call to "add" would be ambiguous. Could be dylan:add or
+    // log:add, so the compiler should warn and choose the current
+    // module. We add the current module prefix to prevent a warning.
+    log:add($root, log, as(<list>, split(name, '.')), name);
   end;
 end method initialize;
 
 define function local-name
     (log :: <abstract-log>)
  => (local-name :: <string>)
-  last(split(log.log-name, '.'))
+  last(split(log.name, '.'))
 end;
 
 // Instances of this class are used as placeholders in the log hierarchy when
@@ -152,18 +229,18 @@ end;
 define open class <placeholder-log> (<abstract-log>)
 end;
 
-define sealed generic log-level (log :: <log>) => (level :: <log-level>);
-define sealed generic log-targets (log :: <log>) => (targets :: <vector>);
-define sealed generic log-formatter (log :: <log>) => (formatter :: <log-formatter>);
+define public sealed generic level (log :: <log>) => (level :: <level>);
+define public sealed generic targets (log :: <log>) => (targets :: <vector>);
+define public sealed generic formatter (log :: <log>) => (formatter :: <formatter>);
 
-define open class <log> (<abstract-log>)
-  slot log-level :: <log-level> = $trace-level,
+define public open class <log> (<abstract-log>)
+  public slot level :: <level> = $trace-level,
     init-keyword: level:;
 
-  constant slot log-targets :: <stretchy-vector> = make(<stretchy-vector>),
+  constant slot targets :: <stretchy-vector> = make(<stretchy-vector>),
     init-keyword: targets:;
 
-  slot log-formatter :: <log-formatter> = $default-log-formatter,
+  slot formatter :: <formatter> = $default-formatter,
     init-keyword: formatter:;
 
 end class <log>;
@@ -175,14 +252,14 @@ define method make
  => (log)
   // Formatter may be specified as a string for convenience.
   if (instance?(formatter, <string>))
-    formatter := make(<log-formatter>, pattern: formatter);
+    formatter := make(<formatter>, pattern: formatter);
   end;
   // Make sure targets is a <stretchy-vector>.  It's convenient for users
   // to be able to pass list(make(<target> ...)) though.
   let targets = as(<stretchy-vector>, targets | #[]);
   apply(next-method, class,
         targets: targets,
-        formatter: formatter | $default-log-formatter,
+        formatter: formatter | $default-formatter,
         args)
 end method make;
 
@@ -192,53 +269,56 @@ define method print-object
   if (*print-escape?*)
     next-method();
   else
-    format(stream, "%s (%sadditive, level: %s, targets: %s)",
-           log.log-name,
-           if (log.log-additive?) "" else "non-" end,
-           log.log-level.level-name,
-           if (empty?(log.log-targets))
-             "None"
-           else
-             join(log.log-targets, ", ", key: curry(format-to-string, "%s"))
-           end);
+    format:to-stream(stream, "%s (%sadditive, level: %s, targets: %s)",
+                     log.name,
+                     if (log.additive?) "" else "non-" end,
+                     log.level.level-name,
+                     if (empty?(log.targets))
+                       "None"
+                     else
+                       join(log.targets, ", ", key: curry(format-to-string, "%s"))
+                     end);
   end;
 end method print-object;
 
-define method add-target
-    (log :: <log>, target :: <log-target>) => ()
-  add-new!(log.log-targets, target)
+// There's only one add-target method, and we want the function to be
+// public so I'm using this as an example of one of my other ideas, to
+// allow "define generic" to accept a default implementation...
+define public generic add-target
+    (log :: <log>, target :: <target>) => ()
+  add-new!(log.targets, target)
 end;
 
-define method remove-target
-    (log :: <log>, target :: <log-target>) => ()
-  remove!(log.log-targets, target);
+define public generic remove-target
+    (log :: <log>, target :: <target>) => ()
+  remove!(log.targets, target);
 end;
 
-define method remove-all-targets
+define public generic remove-all-targets
     (log :: <log>) => ()
-  for (target in log.log-targets)
+  for (target in log.targets)
     remove-target(log, target)
   end;
 end;
 
-define open class <logging-error> (<error>, <simple-condition>)
+define open class <error> (dylan:<error>, <simple-condition>)
 end;
 
-define function logging-error
+define function %error
     (control-string, #rest args)
-  signal(make(<logging-error>,
+  signal(make(log:<error>,
               format-string: control-string,
               format-arguments: args))
 end;
 
-define function get-root-log
+define public function get-root-log
     () => (log :: <log>)
-  $root-log
+  $root
 end;
 
-define function get-log
+define public function get-log
     (name :: <string>) => (log :: false-or(<abstract-log>))
-  %get-log($root-log, as(<list>, split(name, '.')), name)
+  %get-log($root, as(<list>, split(name, '.')), name)
 end;
 
 define method %get-log
@@ -246,7 +326,7 @@ define method %get-log
   if (empty?(path))
     log
   else
-    let child = element(log.log-children, first(path), default: #f);
+    let child = element(log.children, first(path), default: #f);
     child & %get-log(child, path.tail, original-name)
   end
 end method %get-log;
@@ -258,7 +338,7 @@ end method %get-log;
 
 define method %get-log
     (log == #f, path :: <list>, original-name :: <string>)
-  logging-error("Log not found: %s", original-name);
+  %error("Log not found: %s", original-name);
 end method %get-log;
 
 
@@ -266,29 +346,29 @@ define function add-log
     (parent :: <abstract-log>, new :: <abstract-log>, path :: <list>,
      original-name :: <string>)
   let name :: <string> = first(path);
-  let child = element(parent.log-children, name, default: #f);
+  let child = element(parent.children, name, default: #f);
   if (path.size == 1)
     if (child)
       if (instance?(child, <placeholder-log>))
         // Copy the placeholder's children into the new log that
         // is replacing it.
-        for (grandchild in child.log-children)
-          new.log-children[local-name(grandchild)] := grandchild;
-          grandchild.log-parent := new;
+        for (grandchild in child.children)
+          new.children[local-name(grandchild)] := grandchild;
+          grandchild.parent := new;
         end;
       else
-        logging-error("Invalid log name, %s.  A child log named %s "
-                      "already exists.", original-name, name);
+        %error("Invalid log name, %s.  A child log named %s "
+                 "already exists.", original-name, name);
       end;
     end;
-    parent.log-children[name] := new;
-    new.log-parent := parent;
+    parent.children[name] := new;
+    new.parent := parent;
   else
     if (~child)
       child := make(<placeholder-log>, name: name, parent: parent);
-      parent.log-children[name] := child;
+      parent.children[name] := child;
     end;
-    add-log(child, new, path.tail, original-name);
+    log:add(child, new, path.tail, original-name);
   end;
 end function add-log;
 
@@ -299,42 +379,44 @@ end function add-log;
 //// Log levels
 ////
 
+define public generic level-name (level :: <level>) => (name :: <string>);
+
 // Root of the log level hierarchy.  Logging uses a simple class
 // hierarchy to determine what messages should be logged.
 //
-define open abstract primary class <log-level> (<object>)
+define public open abstract primary class <level> (<object>)
   constant slot level-name :: <byte-string>,
     init-keyword: name:;
 end;
 
-define open class <trace-level> (<log-level>)
+define public open class <trace-level> (<level>)
   inherited slot level-name = "trace";
 end;
 
-define open class <debug-level> (<trace-level>)
+define public open class <debug-level> (<trace-level>)
   inherited slot level-name = "debug";
 end;
 
-define open class <info-level> (<debug-level>)
+define public open class <info-level> (<debug-level>)
   inherited slot level-name = "info";
 end;
 
-define open class <warn-level> (<info-level>)
+define public open class <warn-level> (<info-level>)
   inherited slot level-name = "WARN";
 end;
 
-define open class <error-level> (<warn-level>)
+define public open class <error-level> (<warn-level>)
   inherited slot level-name = "ERROR";
 end;
 
-define constant $trace-level = make(<trace-level>);
-define constant $debug-level = make(<debug-level>);
-define constant $info-level = make(<info-level>);
-define constant $warn-level = make(<warn-level>);
-define constant $error-level = make(<error-level>);
+define public constant $trace-level = make(<trace-level>);
+define public constant $debug-level = make(<debug-level>);
+define public constant $info-level = make(<info-level>);
+define public constant $warn-level = make(<warn-level>);
+define public constant $error-level = make(<error-level>);
 
-define method log-level-applicable?
-    (given-level :: <log-level>, level :: <log-level>)
+define method level-applicable?
+    (given-level :: <level>, level :: <level>)
  => (applicable? :: <boolean>)
   instance?(given-level, level.object-class)
 end;
@@ -346,51 +428,51 @@ end;
 //// Logging messages
 ////
 
-// This is generally called via log-info, log-error, etc, which simply curry
+// This is generally called via info, error, etc, which simply curry
 // the first argument.
 //
-define method log-message
-    (given-level :: <log-level>, log :: <log>, object :: <object>, #rest args)
+define public generic message
+    (given-level :: <level>, log :: <log>, object :: <object>, #rest args)
  => ()
-  if (log.log-enabled?  & log-level-applicable?(given-level, log.log-level))
-    for (target :: <log-target> in log.log-targets)
-      log-to-target(target, given-level, log.log-formatter, object, args);
+  if (log.enabled?  & level-applicable?(given-level, log.level))
+    for (target :: <target> in log.targets)
+      to-target(target, given-level, log.formatter, object, args);
     end;
   end;
-  if (log.log-additive?)
-    apply(log-message, given-level, log.log-parent, object, args);
+  if (log.additive?)
+    apply(message, given-level, log.parent, object, args);
   end;
-end method log-message;
+end method message;
 
-define method log-message
-    (given-level :: <log-level>, log :: <placeholder-log>, object :: <object>,
+define method message
+    (given-level :: <level>, log :: <placeholder-log>, object :: <object>,
      #rest args)
-  if (log.log-additive?)
-    apply(log-message, given-level, log.log-parent, object, args)
+  if (log.additive?)
+    apply(message, given-level, log.parent, object, args)
   end;
 end;
 
-// I'm not sure log-trace is a useful distinction from log-debug.
-// I copied it from log4j terminology.  I dropped log-fatal.
-// TODO(cgay): these days I would probably drop log-trace and keep
-// log-fatal.  It's a nice way to exit the program with a backtrace.
+// I'm not sure trace is a useful distinction from debug.
+// I copied it from log4j terminology.  I dropped fatal.
+// TODO(cgay): these days I would probably drop trace and keep
+// fatal.  It's a nice way to exit the program with a backtrace.
 
-define constant log-trace = curry(log-message, $trace-level);
+define public constant trace = curry(message, $trace-level);
 
-define constant log-debug = curry(log-message, $debug-level);
+define public constant debug = curry(message, $debug-level);
 
-define inline function log-debug-if
+define public inline function debug-if
     (test, log :: <abstract-log>, object, #rest args)
   if (test)
-    apply(log-debug, log, object, args);
+    apply(debug, log, object, args);
   end;
 end;
 
-define constant log-info = curry(log-message, $info-level);
+define public constant info = curry(message, $info-level);
 
-define constant log-warning = curry(log-message, $warn-level);
+define public constant warning = curry(message, $warn-level);
 
-define constant log-error = curry(log-message, $error-level);
+define public constant error = curry(message, $error-level);
 
 
 ///////////////////////////////////////////////////////////
@@ -400,7 +482,7 @@ define constant log-error = curry(log-message, $error-level);
 // Abstract target for logging.  Subclasses represent different
 // backend targets such as streams, files, databases, etc.
 //
-define open abstract class <log-target> (<closable-object>)
+define public open abstract class <target> (<closable-object>)
 end;
 
 
@@ -408,52 +490,52 @@ end;
 // must be logged for the given log level, so methods should unconditionally
 // write the object to the backing store.
 //
-define open generic log-to-target
-    (target :: <log-target>, level :: <log-level>, formatter :: <log-formatter>,
+define public open generic to-target
+    (target :: <target>, level :: <level>, formatter :: <formatter>,
      object :: <object>, args :: <sequence>)
  => ();
 
 // Override this if you want to use a normal formatter string but
 // want to write objects to the log stream instead of strings.
 //
-define open generic write-message
-    (target :: <log-target>, object :: <object>, args :: <sequence>)
+define public open generic write-message
+    (target :: <target>, object :: <object>, args :: <sequence>)
  => ();
 
 
 // Note that there is no default method on "object :: <object>".
 
 define method close
-    (target :: <log-target>, #key)
+    (target :: <target>, #key)
  => ()
   // do nothing
 end;
 
 // A log target that simply discards its output.
-define sealed class <null-log-target> (<log-target>)
+define public sealed class <null-target> (<target>)
 end;
 
-define sealed method log-to-target
-    (target :: <null-log-target>, level :: <log-level>,
-     formatter :: <log-formatter>, format-string :: <string>,
+define sealed method to-target
+    (target :: <null-target>, level :: <level>,
+     formatter :: <formatter>, format-string :: <string>,
      args :: <sequence>)
  => ()
   // do nothing
 end;
 
-define constant $null-log-target :: <null-log-target>
-  = make(<null-log-target>);
+define public constant $null-target :: <null-target>
+  = make(<null-target>);
 
 // A log target that outputs directly to a stream.
-// e.g., make(<stream-log-target>, stream: *standard-output*)
+// e.g., make(<stream-target>, stream: *standard-output*)
 //
-define open class <stream-log-target> (<log-target>)
+define public open class <stream-target> (<target>)
   constant slot target-stream :: <stream>,
     required-init-keyword: #"stream";
 end;
 
-define method print-object
-    (target :: <stream-log-target>, stream :: <stream>)
+define method common-extensions:print-object
+    (target :: <stream-target>, stream :: <stream>)
  => ()
   if (*print-escape?*)
     next-method();
@@ -462,64 +544,67 @@ define method print-object
   end;
 end method print-object;
 
-define constant $stdout-log-target
-  = make(<stream-log-target>, stream: *standard-output*);
+define public constant $stdout-target
+  = make(<stream-target>, stream: *standard-output*);
 
-define constant $stderr-log-target
-  = make(<stream-log-target>, stream: *standard-error*);
+define public constant $stderr-target
+  = make(<stream-target>, stream: *standard-error*);
 
-define method log-to-target
-    (target :: <stream-log-target>, level :: <log-level>, formatter :: <log-formatter>,
+define method to-target
+    (target :: <stream-target>, level :: <level>, formatter :: <formatter>,
      format-string :: <string>, args :: <sequence>)
  => ()
   let stream :: <stream> = target.target-stream;
-  with-stream-locked (stream)
+  streams:with-lock (stream)
     pattern-to-stream(formatter, stream, level, target, format-string, args);
-    write(stream, "\n");
-    force-output(stream);
+    streams:write(stream, "\n");
+    streams:flush(stream);
   end;
-end method log-to-target;
+end method to-target;
 
 define method write-message
-    (target :: <stream-log-target>, format-string :: <string>, args :: <sequence>)
+    (target :: <stream-target>, format-string :: <string>, args :: <sequence>)
  => ()
-  apply(format, target.target-stream, format-string, args);
+  apply(format:to-stream, target.target-stream, format-string, args);
 end method write-message;
 
 
 // A log target that is backed by a single, monolithic file.
-// (Why is this not a subclass of <stream-log-target>?)
+// (Why is this not a subclass of <stream-target>?)
 //
-define class <file-log-target> (<log-target>)
-  constant slot target-pathname :: <pathname>,
+define public class <file-target> (<target>)
+  constant slot target-pathname :: fs:<pathname>,
     required-init-keyword: pathname:;
-  slot target-stream :: false-or(<file-stream>) = #f;
+  slot target-stream :: false-or(fs:<file-stream>) = #f;
 end;
 
 define method initialize
-    (target :: <file-log-target>, #key)
+    (target :: <file-target>, #key)
   next-method();
   open-target-stream(target);
 end;
 
-define method print-object
-    (target :: <file-log-target>, stream :: <stream>)
+// The use of the common-extensions: module prefix here makes it clear to
+// the reader that this extends a generic defined in a different module.
+// The prefix isn't strictly necessary.
+define method common-extensions:print-object
+    (target :: <file-target>, stream :: <stream>)
  => ()
   if (*print-escape?*)
     next-method();
   else
-    format(stream, "file %s", as(<string>, target.target-pathname));
+    format:to-stream(stream, "file %s", as(<string>, target.target-pathname));
   end;
 end method print-object;
 
-define open generic open-target-stream
-    (target :: <file-log-target>) => (stream :: <stream>);
+define public open generic open-target-stream
+    (target :: <file-target>) => (stream :: <stream>);
 
 define method open-target-stream
-    (target :: <file-log-target>)
- => (stream :: <file-stream>)
-  ensure-directories-exist(target.target-pathname);
-  target.target-stream := make(<file-stream>,
+    (target :: <file-target>)
+ => (stream :: fs:<file-stream>)
+  fs:ensure-directories-exist(target.target-pathname);
+  target.target-stream := make(fs:<file-stream>,
                                locator: target.target-pathname,
                                element-type: <character>,
                                direction: #"output",
@@ -527,27 +612,27 @@ define method open-target-stream
                                if-does-not-exist: #"create")
 end;
 
-define method log-to-target
-    (target :: <file-log-target>, level :: <log-level>,
-     formatter :: <log-formatter>, format-string :: <string>,
+define method to-target
+    (target :: <file-target>, level :: <level>,
+     formatter :: <formatter>, format-string :: <string>,
      format-args :: <sequence>)
  => ()
-  let stream :: <stream> = target.target-stream;
-  with-stream-locked (stream)
+  let stream :: streams:<stream> = target.target-stream;
+  streams:with-lock (stream)
     pattern-to-stream(formatter, stream, level, target, format-string, format-args);
-    write(stream, "\n");
-    force-output(stream);
+    streams:write(stream, "\n");
+    streams:flush(stream);
   end;
-end method log-to-target;
+end method to-target;
 
 define method write-message
-    (target :: <file-log-target>, format-string :: <string>, args :: <sequence>)
+    (target :: <file-target>, format-string :: <string>, args :: <sequence>)
  => ()
-  apply(format, target.target-stream, format-string, args);
+  apply(format:to-stream, target.target-stream, format-string, args);
 end;
 
 define method close
-    (target :: <file-log-target>, #key abort?)
+    (target :: <file-target>, #key abort?)
  => ()
   if (target.target-stream)
     close(target.target-stream, abort?: abort?);
@@ -567,7 +652,7 @@ end;
 // Attempt to re-open the file if logging to it gets (the equivalent
 // of) bad file descriptor?
 //
-define class <rolling-file-log-target> (<file-log-target>)
+define public class <rolling-file-target> (<file-target>)
 
   constant slot max-file-size :: <integer> = 100 * 1024 * 1024,
     init-keyword: max-size:;
@@ -583,51 +668,51 @@ define class <rolling-file-log-target> (<file-log-target>)
 
   // Date when the underlying file was created.  When it gets closed
   // it will be renamed with this date in the name.
-  slot file-creation-date :: <date> = current-date();
+  slot file-creation-date <date> = date:now();
 
-end class <rolling-file-log-target>;
+end class <rolling-file-target>;
 
-define constant $log-roller-lock :: <lock> = make(<lock>);
+define constant $roller-lock :: <lock> = make(<lock>);
 
 
 define method initialize
-    (target :: <rolling-file-log-target>, #key roll :: <boolean> = #t)
+    (target :: <rolling-file-target>, #key roll :: <boolean> = #t)
   if (roll
-        & file-exists?(target.target-pathname)
-        & file-property(target.target-pathname, #"size") > 0)
-    roll-log-file(target);
+        & fs:file-exists?(target.target-pathname)
+        & fs:file-property(target.target-pathname, #"size") > 0)
+    roll-file(target);
   end;
   next-method();
 end method initialize;
 
-define method print-object
-    (target :: <rolling-file-log-target>, stream :: <stream>)
+define method common-extensions:print-object
+    (target :: <rolling-file-target>, stream :: <stream>)
  => ()
   if (*print-escape?*)
     next-method();
   else
-    format(stream, "rolling file %s", as(<string>, target.target-pathname));
+    format:to-stream(stream, "rolling file %s", as(<string>, target.target-pathname));
   end;
 end method print-object;
 
-define method log-to-target
-    (target :: <rolling-file-log-target>, level :: <log-level>,
-     formatter :: <log-formatter>, format-string :: <string>,
+define method to-target
+    (target :: <rolling-file-target>, level :: <level>,
+     formatter :: <formatter>, format-string :: <string>,
      format-args :: <sequence>)
  => ()
   next-method();
-  // todo -- calling stream-size may be very slow?  Maybe log-to-target should
+  // todo -- calling streams:size may be very slow?  Maybe to-target should
   // return the number of bytes written, but that could be inefficient (e.g.,
   // it might have to format to string and then write that to the underlying
   // stream instead of formatting directly to the stream).
-  if (stream-size(target.target-stream) >= target.max-file-size)
-    roll-log-file(target);
+  if (streams:size(target.target-stream) >= target.max-file-size)
+    roll-file(target);
   end;
 end;
 
-define method roll-log-file
-    (target :: <rolling-file-log-target>)
-  with-lock ($log-roller-lock)
+define method roll-file
+    (target :: <rolling-file-target>)
+  with-lock ($roller-lock)
     if (target.target-stream)  // may be #f first time
       close(target.target-stream);
     end;
@@ -636,42 +721,42 @@ define method roll-log-file
     // Also consider putting more info in the rolled filenames, such
     // as process id, hostname, etc.  Makes it easier to combine files
     // into a single location.
-    let date = format-date("%Y%m%dT%H%M%S", target.file-creation-date);
+    let date = date:to-string("%Y%m%dT%H%M%S", target.file-creation-date);
     let oldloc = as(<file-locator>, target.target-pathname);
     let newloc = merge-locators(as(<file-locator>,
                                    concatenate(locator-name(oldloc), ".", date)),
                                 oldloc);
-    rename-file(oldloc, newloc);
-    target.file-creation-date := current-date();
+    fs:rename-file(oldloc, newloc);
+    target.file-creation-date := date:now();
     open-target-stream(target);
   end with-lock;
-end method roll-log-file;
+end method roll-file;
 
 
 ///////////////////////////////////////////////////////////
 //// Formatting
 ////
 
-define open class <log-formatter> (<object>)
+define public open class <formatter> (<object>)
   constant slot formatter-pattern :: <string>,
     required-init-keyword: pattern:;
   slot parsed-pattern :: <sequence>;
-end class <log-formatter>;
+end class <formatter>;
 
 // Leave in for debugging for now.
 ignore(formatter-pattern);
 
 define method initialize
-    (formatter :: <log-formatter>, #key pattern :: <string>)
+    (formatter :: <formatter>, #key pattern :: <string>)
   next-method();
   formatter.parsed-pattern := parse-formatter-pattern(pattern);
 end;
 
 // Should be called with the stream locked.
 //
-define method pattern-to-stream
-    (formatter :: <log-formatter>, stream :: <stream>,
-     level :: <log-level>, target :: <log-target>,
+define public generic pattern-to-stream
+    (formatter :: <formatter>, stream :: <stream>,
+     level :: <level>, target :: <target>,
      object :: <object>, args :: <sequence>)
  => ()
   for (item in formatter.parsed-pattern)
@@ -707,8 +792,8 @@ define method parse-formatter-pattern
     let control-size :: <integer> = pattern.size;
     local method next-char () => (char :: <character>)
             if (index >= control-size)
-              logging-error("Log format control string ended prematurely: %s",
-                            pattern);
+              %error("Log format control string ended prematurely: %s",
+                     pattern);
             else
               let char = pattern[index];
               index := index + 1;
@@ -778,9 +863,9 @@ define method parse-formatter-pattern
                 "date" =>
                   method (#rest args)
                     pad(if (arg)
-                          format-date(arg, current-date())
+                          date:to-string(arg, date:now())
                         else
-                          as-iso8601-string(current-date())
+                          date:iso8601(date:now())
                         end)
                   end;
                 "level" =>
@@ -814,7 +899,7 @@ define method parse-formatter-pattern
              '{' => parse-long-format-control();
              'd' =>
                method (#rest args)
-                 pad(as-iso8601-string(current-date()));
+                 pad(date:iso8601(date:now()));
                end;
              'l', 'L' =>
                method (level, target, object, args)
@@ -847,15 +932,15 @@ define method parse-formatter-pattern
   result
 end method parse-formatter-pattern;
 
-define constant $default-log-formatter :: <log-formatter>
-  = make(<log-formatter>, pattern: "%{date:%Y-%m-%dT%H:%M:%S.%F%z} %-5L [%t] %m");
+define public constant $default-formatter :: <formatter>
+  = make(<formatter>, pattern: "%{date:%Y-%m-%dT%H:%M:%S.%F%z} %-5L [%t] %m");
 
-define constant $application-start-date :: <date> = current-date();
+define constant $application-start-date :: <date> = date:now();
 
 define function elapsed-milliseconds
     () => (millis :: <double-integer>)
-  let duration :: <duration> = current-date() - $application-start-date;
-  let (days, hours, minutes, seconds, microseconds) = decode-duration(duration);
+  let duration :: <duration> = date:now() - $application-start-date;
+  let (days, hours, minutes, seconds, microseconds) = date:decode-duration(duration);
   plus(div(microseconds, 1000.0),
        plus(mul(seconds, 1000),
             plus(mul(minutes, 60000),
@@ -867,10 +952,10 @@ end function elapsed-milliseconds;
 //// For use by the test suite
 ////
 
-define function reset-logging
+define public function %reset
     ()
   // maybe should close existing log targets?
-  $root-log := make(<log>, name: "root", additive?: #f, enabled?: #f);
+  $root := make(<log>, name: "root", additive?: #f, enabled?: #f);
 end;
 
 /////////////////////////////////////////////////////
@@ -878,7 +963,7 @@ end;
 ////
 
 begin
-  reset-logging();
+  %reset();
 end;
 
 

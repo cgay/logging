@@ -1,1 +1,1 @@
-The logging library is documented in the `Dylan Library Reference <http://opendylan.org/documentation/library-reference/index.html>`_.
+Logging library for Dylan, documented `here <https://package.opendylan.org/logging/index.html>`_.

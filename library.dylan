@@ -99,6 +99,8 @@ define module logging-impl
   use locators,
     import: { <locator>,
               <file-locator>,
+              file-locator,
+              locator-directory,
               locator-name,
               merge-locators,
               simplify-locator };

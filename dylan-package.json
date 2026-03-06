@@ -9,7 +9,7 @@
         "testworks"
     ],
     "url": "https://github.com/dylan-lang/logging",
-    "version": "2.2.1",
+    "version": "2.2.2",
     "license": "MIT",
     "license-url": "https://github.com/dylan-lang/logging/blob/master/License.txt"
 }

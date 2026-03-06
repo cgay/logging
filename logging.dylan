@@ -706,7 +706,22 @@ define method roll-log-file
     let newloc = merge-locators(as(<file-locator>,
                                    concatenate(locator-name(oldloc), ".", date)),
                                 oldloc);
-    rename-file(oldloc, newloc);
+    // Try renaming the file up to 10 times and then give up.
+    iterate loop (attempt = 1)  // first numbered file is .1
+      block ()
+        rename-file(oldloc, newloc, if-exists: #"signal");
+        // TODO: handle <file-exists-error> once
+        // https://github.com/dylan-lang/opendylan/pull/1801 lands in an OD release.
+      exception (err :: <file-system-error>)
+        if (attempt >= 10)
+          logging-error("can't roll log file %s (10 attempts)", oldloc);
+        end;
+        newloc := file-locator(newloc.locator-directory,
+                               format-to-string("%s.%s.%d",
+                                                oldloc.locator-name, date, attempt));
+        loop(attempt + 1);
+      end;
+    end iterate;
     target.file-roll-date := current-date();
     open-target-stream(target);
   end with-lock;

@@ -208,3 +208,33 @@ define test test-rolling-log-file-absolutism ()
     working-directory() := cwd;
   end block;
 end test;
+
+// Ensure that the file can roll 9 times without error and that files with numeric
+// uniquifiers are created.  (Don't check that a max of 10 rolls can occur within a
+// second because that could easily cause false failures due to the test depending on the
+// value of the clock.  I verified it manually. --cgay)
+define test test-rolling-log-file-subsecond-rolling ()
+  let dir = test-temp-directory();
+  let pathname = file-locator(dir, "foo.log");
+  let formatter = make(<log-formatter>, pattern: "%m");
+  let target = make(<rolling-file-log-target>,
+                    pathname: pathname,
+                    max-size: 1); // roll whenever something is logged
+  for (i from 1 to 10)
+    log-to-target(target, $info-level, formatter, "woof", #[]);
+  end;
+  let files = directory-contents(dir);
+  assert-true(files.size >= 9);
+  let found = 0;
+  local
+    method is-subsecond-file? (loc :: <locator>)
+      let name = loc.locator-name; // ex: "foo.log.20260303T180404.1"
+      let parts = split(name, '.');
+      if (parts.size == 4)
+        let n = string-to-integer(parts[3]);
+        assert-true(n >=1 & n <= 9, "%s is between 1 and 9 inclusive", n);
+        #t
+      end;
+    end;
+  assert-true(any?(is-subsecond-file?, files));
+end test;

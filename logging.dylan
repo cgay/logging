@@ -829,108 +829,84 @@ define method parse-formatter-pattern
         index := idx;
         char := next-char();
       end;
-      local method pad (string :: <string>)
-              let len :: <integer> = string.size;
-              if (width <= len)
-                string
+      let directive-arg = #f;
+      local
+        method pad (string :: <string>)
+          // Not worth adding a dependency on the strings library for this.
+          let len :: <integer> = string.size;
+          if (width <= len)
+            string
+          else
+            let fill :: <string> = make(<string>, size: width - len, fill: ' ');
+            if (align == #"left")
+              concatenate(string, fill)
+            else
+              concatenate(fill, string)
+            end
+          end
+        end,
+        method %%date (#rest ignore)
+          pad(if (directive-arg)
+                format-date(directive-arg, current-date())
               else
-                let fill :: <string> = make(<string>, size: width - len, fill: ' ');
-                if (align == #"left")
-                  concatenate(string, fill)
-                else
-                  concatenate(fill, string)
-                end
-              end
-            end method;
-      local method parse-long-format-control ()
-              let bpos = index;
-              while (~member?(peek-char(), ":}")) next-char() end;
-              let word = copy-sequence(pattern, start: bpos, end: index);
-              let arg = #f;
-              if (pattern[index] == ':')
-                next-char();
-                let start = index;
-                while(peek-char() ~= '}') next-char() end;
-                arg := copy-sequence(pattern, start: start, end: index);
-              end;
-              next-char();   // eat '}'
-              select (word by \=)
-                "date" =>
-                  method (#rest args)
-                    pad(if (arg)
-                          format-date(arg, current-date())
-                        else
-                          as-iso8601-string(current-date())
-                        end)
-                  end;
-                "level" =>      // deprecated, use "severity"
-                  method (level, target, object, args)
-                    pad(level-name(level))
-                  end;
-                "severity" =>
-                  // Would be nice to do this padding at compile time since the severity
-                  // level is explicit in the log-info etc call. Just pass the level to
-                  // this function (parse-formatter-pattern).
-                  method (level, target, object, args)
-                    pad(level-name(level))
-                  end;
-                "message" =>
-                  method (level, target, object, args)
-                    write-message(target, object, args);
-                    #f
-                  end;
-                "pid" =>
-                  method (#rest args)
-                    pad(integer-to-string(current-process-id()));
-                  end;
-                "millis" =>
-                  method (#rest args)
-                    pad(number-to-string(elapsed-milliseconds()));
-                  end;
-                "thread" =>
-                  method (#rest args)
-                    pad(thread-name(current-thread())
-                          | number-to-string(current-thread-id()));
-                  end;
-                otherwise =>
-                  // Unknown control string.  Just output the text we've seen...
-                  copy-sequence(pattern, start: start, end: index);
-              end select;
-            end method;
+                as-iso8601-string(current-date())
+              end)
+        end,
+        method %%severity (level, target, object, args)
+          // Would be nice to do this padding at compile time since the severity level is
+          // explicit in the log-info etc call. Just pass the level to this function
+          // (parse-formatter-pattern).
+          pad(level-short-name(level))
+        end,
+        method %%message (level, target, object, args)
+          write-message(target, object, args);
+          #f
+        end,
+        method %%process (#rest args)
+          pad(integer-to-string(current-process-id()));
+        end,
+        method %%milliseconds (#rest args)
+          pad(number-to-string(elapsed-milliseconds()));
+        end,
+        method %%thread (#rest args)
+          pad(thread-name(current-thread())
+                | number-to-string(current-thread-id()));
+        end,
+        method parse-long-format-control ()
+          let bpos = index;
+          while (~member?(peek-char(), ":}")) next-char() end;
+          let word = copy-sequence(pattern, start: bpos, end: index);
+          if (pattern[index] == ':')
+            next-char();
+            let start = index;
+            while(peek-char() ~= '}') next-char() end;
+            directive-arg := copy-sequence(pattern, start: start, end: index);
+          end;
+          next-char();   // eat '}'
+          select (word by \=)
+            "date"     => %%date;
+            "level"    => %%severity; // deprecated, use "severity"
+            "severity" => %%severity;
+            "message"  => %%message;
+            "pid"      => %%process;
+            "millis"   => %%milliseconds;
+            "thread"   => %%thread;
+            otherwise  =>
+              // Unknown control string.  Just output the text we've seen...
+              copy-sequence(pattern, start: start, end: index);
+          end select
+        end method;
       add!(result,
            select (char)
-             '{' => parse-long-format-control();
-             'd' =>
-               method (#rest args)
-                 pad(as-iso8601-string(current-date()));
-               end;
-             'l', 'L' =>
-               method (level, target, object, args)
-                 pad(level-name(level))
-               end;
-             'm' =>
-               method (level, target, object, args)
-                 write-message(target, object, args);
-                 #f
-               end;
-             'p' =>
-               method (#rest args)
-                 pad(integer-to-string(current-process-id()));
-               end;
-             'r' =>
-               method (#rest args)
-                 pad(number-to-string(elapsed-milliseconds()));
-               end;
-             's' =>
-               method (level, target, object, args)
-                 pad(level-short-name(level))
-               end;
-             't' =>
-               method (#rest args)
-                 pad(thread-name(current-thread())
-                       | number-to-string(current-thread-id()));
-               end;
-             '%' => pad("%");
+             '{'       => parse-long-format-control();
+             'd'       => %%date;
+             'l', 'L'  => %%severity;
+             'm'       => %%message;
+             'p'       => %%process;
+             'r'       => %%milliseconds;
+             's'       => %%severity;
+             't'       => %%thread;
+             '%'       => pad("%");
              otherwise =>
                // Unknown control char.  Just output the text we've seen...
                copy-sequence(pattern, start: start, end: index);
